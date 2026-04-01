@@ -1,0 +1,16 @@
+# Build artifacts
+catalyst-search
+*.o
+*.dSYM/
+
+# Generated output
+*_results.rle
+*_debug.rle
+
+# Solver build artifacts (the submodule itself is tracked)
+solvers/cadical/build/
+# Test binaries
+test/test_*
+test/check_*
+!test/test_*.cpp
+!test/check_*.cpp

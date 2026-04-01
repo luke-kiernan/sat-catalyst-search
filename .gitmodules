@@ -1,0 +1,6 @@
+[submodule "solvers/cadical"]
+	path = solvers/cadical
+	url = https://github.com/arminbiere/cadical.git
+[submodule "toml"]
+	path = toml
+	url = https://github.com/ToruNiina/toml11.git
