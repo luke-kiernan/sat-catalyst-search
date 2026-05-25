@@ -233,6 +233,11 @@ struct Grid {
     // Known catalyst cells (stator = always on, non_stator = on but might be active)
     std::set<std::pair<int,int>> stator_positions;
     std::set<std::pair<int,int>> non_stator_positions;
+    // Catalyst cells that are ON in the stable form but OFF at generation 0
+    // (LifeHistory state 4). Like non_stator for recovery/ZOI purposes, but
+    // their t=0 state is dead and they are exempt from perturbation/active
+    // counting (their fill-in is catalyst setup, not a tracked interaction).
+    std::set<std::pair<int,int>> init_off_positions;
 
     // The perturbation region: ZOI of unknown cells
     // Set of (world_x, world_y) positions
@@ -309,7 +314,8 @@ inline Grid build_grid(const SearchConfig& config) {
                 active_max_x = std::max(active_max_x, x);
                 active_max_y = std::max(active_max_y, y);
             }
-            if (s == CellState::UNKNOWN || s == CellState::STATOR || s == CellState::NON_STATOR) {
+            if (s == CellState::UNKNOWN || s == CellState::STATOR ||
+                s == CellState::NON_STATOR || s == CellState::INIT_OFF) {
                 unknown_min_x = std::min(unknown_min_x, x);
                 unknown_min_y = std::min(unknown_min_y, y);
                 unknown_max_x = std::max(unknown_max_x, x);
@@ -350,15 +356,21 @@ inline Grid build_grid(const SearchConfig& config) {
             } else if (s == CellState::NON_STATOR) {
                 grid.catalyst_vars[gy][gx] = 1; // known alive
                 grid.non_stator_positions.insert({x, y});
+            } else if (s == CellState::INIT_OFF) {
+                // ON in the stable still-life (stable value = alive), but the
+                // gen-0 state is dead (set in the t=0 phase below).
+                grid.catalyst_vars[gy][gx] = 1;
+                grid.init_off_positions.insert({x, y});
             }
         }
     }
 
-    // All catalyst cell positions (unknown + stator + non_stator)
+    // All catalyst cell positions (unknown + stator + non_stator + init_off)
     std::set<std::pair<int,int>> all_catalyst;
     all_catalyst.insert(grid.catalyst_positions.begin(), grid.catalyst_positions.end());
     all_catalyst.insert(grid.stator_positions.begin(), grid.stator_positions.end());
     all_catalyst.insert(grid.non_stator_positions.begin(), grid.non_stator_positions.end());
+    all_catalyst.insert(grid.init_off_positions.begin(), grid.init_off_positions.end());
 
     // Build perturbation region: ZOI (zone of influence) of all catalyst cells
     // = all cells within distance 1 of any catalyst cell
@@ -408,6 +420,10 @@ inline Grid build_grid(const SearchConfig& config) {
                     break;
                 case CellState::UNKNOWN:
                     grid.cells[0][gy][gx] = grid.catalyst_vars[gy][gx];
+                    break;
+                case CellState::INIT_OFF:
+                    // ON in stable form, but dead at gen 0.
+                    grid.cells[0][gy][gx] = 0;
                     break;
                 default:
                     grid.cells[0][gy][gx] = 0;

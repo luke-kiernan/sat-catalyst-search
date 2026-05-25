@@ -134,7 +134,8 @@ inline FullSolution extract_full_solution(const Grid& grid, const SolverResult& 
         for (int x = 0; x < pattern.width; x++) {
             CellState s = pattern.grid[y][x];
             if (s == CellState::ACTIVE || s == CellState::UNKNOWN ||
-                s == CellState::STATOR || s == CellState::NON_STATOR) {
+                s == CellState::STATOR || s == CellState::NON_STATOR ||
+                s == CellState::INIT_OFF) {
                 min_x = std::min(min_x, x);
                 min_y = std::min(min_y, y);
                 max_x = std::max(max_x, x);
@@ -180,7 +181,8 @@ inline FullSolution extract_full_solution_from_catalyst(const CatalystSolution& 
         for (int x = 0; x < pattern.width; x++) {
             CellState s = pattern.grid[y][x];
             if (s == CellState::ACTIVE || s == CellState::UNKNOWN ||
-                s == CellState::STATOR || s == CellState::NON_STATOR) {
+                s == CellState::STATOR || s == CellState::NON_STATOR ||
+                s == CellState::INIT_OFF) {
                 min_x = std::min(min_x, x);
                 min_y = std::min(min_y, y);
                 max_x = std::max(max_x, x);

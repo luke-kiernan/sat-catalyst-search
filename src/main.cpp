@@ -4,58 +4,14 @@
 #include "output.hpp"
 #include "relevance.hpp"
 
-// Find a minimal-population still life consistent with the relevant cells.
-// Uses a second SAT solver with stability constraints + relevant cell fixings,
-// binary searching on the number of non-relevant alive cells.
-CatalystSolution minimize_catalyst(Grid& grid, const SolverResult& result,
-                                    const std::set<std::pair<int,int>>& relevant,
-                                    const RuleEncoding& rule_enc) {
-    // Collect non-relevant catalyst SAT variables
-    std::vector<int> free_vars;
-    for (auto [wx, wy] : grid.catalyst_positions) {
-        if (relevant.count({wx, wy})) continue;
-        int var = grid.catalyst_var_at(wx, wy);
-        if (var >= 2)
-            free_vars.push_back(var - 1);
-    }
-
-    int lo = 0, hi = (int)free_vars.size();
-    SolverResult best;
-
-    while (lo < hi) {
-        int mid = (lo + hi) / 2;
-
-        CadicalSolver attempt;
-        encode_stability(attempt, grid, rule_enc);
-        encode_nontriviality(attempt, grid);
-
-        // Fix relevant cells
-        for (auto [wx, wy] : relevant) {
-            int var = grid.catalyst_var_at(wx, wy);
-            if (var < 2) continue;
-            int sat_var = var - 1;
-            bool alive = result.solution.count(sat_var) > 0;
-            attempt.add_clause(std::vector<int>{alive ? sat_var : -sat_var});
-        }
-
-        // At most mid non-relevant cells alive
-        if (mid < (int)free_vars.size())
-            encode_at_most_k(attempt, grid, free_vars, mid);
-
-        SolverResult res = attempt.solve();
-        if (res.status == SolverStatus::SAT) {
-            best = res;
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-
-    if (best.status != SolverStatus::SAT)
-        return extract_catalyst(grid, result);
-
-    return extract_catalyst(grid, best);
-}
+// NOTE: We report each solver solution as-is rather than minimizing its
+// population. A previous "minimize" step fixed the relevant cells and searched
+// for the smallest *still life* through them — but that is only sound when
+// relevance provably determines the interaction. Our relevance heuristic
+// ("cells adjacent to something that changes") makes no such guarantee, so
+// stability-only minimization could strip alive cells that are structurally
+// part of the catalyst, yielding a still life that no longer catalyzes.
+// Reporting the solver's actual model avoids that entirely.
 
 static volatile sig_atomic_t g_interrupted = 0;
 
@@ -87,7 +43,8 @@ int main(int argc, char* argv[]) {
     std::cout << "Catalyst cells: " << grid.catalyst_positions.size()
               << " unknown, " << grid.stator_positions.size()
               << " stator, " << grid.non_stator_positions.size()
-              << " non-stator\n";
+              << " non-stator, " << grid.init_off_positions.size()
+              << " init-off\n";
     std::cout << "Perturbation region: " << grid.perturbation_region.size() << "\n\n";
 
     // Encode
@@ -124,10 +81,11 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        // Extract relevant cells and minimize catalyst
+        // Report the solver's catalyst as-is; relevance only drives the
+        // blocking clause (search diversity) and the debug RLE.
         solution_count++;
         auto relevant = find_relevant_cells(grid, result);
-        CatalystSolution sol = minimize_catalyst(grid, result, relevant, rule_enc);
+        CatalystSolution sol = extract_catalyst(grid, result);
         std::cout << "--- Solution " << solution_count
                   << " (pop=" << sol.population
                   << ", pos=" << sol.min_x << "," << sol.min_y << ") ---\n";

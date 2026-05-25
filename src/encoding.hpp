@@ -64,6 +64,7 @@ inline int encode_stability(CadicalSolver& solver, Grid& grid,
     all_catalyst.insert(grid.catalyst_positions.begin(), grid.catalyst_positions.end());
     all_catalyst.insert(grid.stator_positions.begin(), grid.stator_positions.end());
     all_catalyst.insert(grid.non_stator_positions.begin(), grid.non_stator_positions.end());
+    all_catalyst.insert(grid.init_off_positions.begin(), grid.init_off_positions.end());
 
     for (auto [wx, wy] : all_catalyst) {
         std::array<int, 9> nine;
@@ -157,11 +158,17 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
         perturbed_definition.push_back(-tv.perturbed[t]);
 
         for (auto [wx, wy] : grid.perturbation_region) {
-            // Stator cells never perturb (always alive by definition)
+            // Stator cells never perturb (always alive by definition).
+            // INIT_OFF cells are exempt too: they are dead at gen 0 by design,
+            // so counting their "off ≠ stable-on" as perturbation would force
+            // started(0) and break the first-active timing window. Their
+            // fill-in is still observed via the ordinary (non-catalyst) cells
+            // around them differing from free evolution.
             // TODO(test): no direct coverage that perturbation is correctly
             // skipped for stators and constrained for non-stators (stable_val==1
             // path below). test_stator_encoding only checks end-to-end SAT.
             if (grid.stator_positions.count({wx, wy})) continue;
+            if (grid.init_off_positions.count({wx, wy})) continue;
 
             int cell_t = grid.cell_at(wx, wy, t);
             int stable_val = grid.catalyst_var_at(wx, wy);
@@ -333,9 +340,11 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
                     solver.add_clause(std::vector<int>{-tv.recovered[t], -adj_lit, stable_val - 1});
                     clause_count++;
                 }
-            } else if (grid.non_stator_positions.count({wx, wy})) {
-                // Non-stator catalyst cell: stable = alive (1).
-                // recovered(t) → ¬adj_on ∨ cell_t is alive
+            } else if (grid.non_stator_positions.count({wx, wy})
+                       || grid.init_off_positions.count({wx, wy})) {
+                // Non-stator / init-off catalyst cell: stable = alive (1).
+                // recovered(t) → ¬adj_on ∨ cell_t is alive. This is what forces
+                // an INIT_OFF cell (dead at gen 0) to be ON again once recovered.
                 // (adj_on is trivially true here since the cell itself is known-alive,
                 // but we keep it in the clause and let unit propagation simplify)
                 if (cell_t >= 2) {
@@ -406,8 +415,9 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
 
 // ── 5. Non-triviality ─────────────────────────────────────────────────────────
 inline int encode_nontriviality(CadicalSolver& solver, const Grid& grid) {
-    // If stator/non_stator cells exist, catalyst is already non-trivial
-    if (!grid.stator_positions.empty() || !grid.non_stator_positions.empty())
+    // If any known catalyst cells exist, the catalyst is already non-trivial
+    if (!grid.stator_positions.empty() || !grid.non_stator_positions.empty()
+        || !grid.init_off_positions.empty())
         return 0;
 
     BigClause at_least_one;
@@ -490,8 +500,11 @@ inline int encode_at_most_k(CadicalSolver& solver, Grid& grid,
 // Stator cells are skipped (never active).
 inline int get_active_literal(Grid& grid, CadicalSolver& solver, int wx, int wy, int t,
                                int& clause_count) {
-    // Stator cells are never active
+    // Stator cells are never active. INIT_OFF cells are exempt from active
+    // counting too (see the perturbation loop) — their gen-0 dead state is by
+    // design, not an interaction.
     if (grid.stator_positions.count({wx, wy})) return 0;
+    if (grid.init_off_positions.count({wx, wy})) return 0;
 
     int cell_t = grid.cell_at(wx, wy, t);
     int stable_val = grid.catalyst_var_at(wx, wy);

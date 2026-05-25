@@ -46,7 +46,8 @@ static void run_case(const std::string& path,
         for (int x = 0; x < cfg.pattern.width; x++) {
             CellState s = cfg.pattern.grid[y][x];
             if (s == CellState::ACTIVE || s == CellState::UNKNOWN ||
-                s == CellState::STATOR || s == CellState::NON_STATOR) {
+                s == CellState::STATOR || s == CellState::NON_STATOR ||
+                s == CellState::INIT_OFF) {
                 min_x = std::min(min_x, x);
                 min_y = std::min(min_y, y);
             }

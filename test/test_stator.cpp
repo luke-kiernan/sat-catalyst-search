@@ -16,24 +16,28 @@ static SearchConfig make_config(const std::string& rle) {
     return cfg;
 }
 
-// 1. RLE parser routes C/E through the switch into STATOR/NON_STATOR.
-static void test_rle_parses_C_and_E() {
-    std::cout << "-- RLE parses C/E into STATOR/NON_STATOR\n";
-    auto p = parse_rle("x = 3, y = 1, rule = LifeHistory\nCBE!");
-    assert(p.grid[0][0] == CellState::STATOR);
+// 1. RLE parser routes C/D/E through the switch into the Barrister-matching
+//    states: C (3) = NON_STATOR, D (4) = INIT_OFF, E (5) = STATOR.
+static void test_rle_parses_catalyst_states() {
+    std::cout << "-- RLE parses C/D/E into NON_STATOR/INIT_OFF/STATOR\n";
+    auto p = parse_rle("x = 5, y = 1, rule = LifeHistory\nCBEDB!");
+    assert(p.grid[0][0] == CellState::NON_STATOR);
     assert(p.grid[0][1] == CellState::UNKNOWN);
-    assert(p.grid[0][2] == CellState::NON_STATOR);
+    assert(p.grid[0][2] == CellState::STATOR);
+    assert(p.grid[0][3] == CellState::INIT_OFF);
+    assert(p.grid[0][4] == CellState::UNKNOWN);
 }
 
 // 2. build_grid routes STATOR/NON_STATOR to the known-alive branch:
 //    populates the right position sets, and assigns catalyst_var = 1
 //    instead of a fresh SAT variable.
 static void test_grid_dispatches_stator_and_non_stator() {
-    std::cout << "-- build_grid routes C/E to stator/non_stator sets with var=1\n";
-    // Pattern: glider rows 0-2, then 3 blank rows, then BCB / BEB at rows 6,7.
+    std::cout << "-- build_grid routes E/C to stator/non_stator sets with var=1\n";
+    // Pattern: glider rows 0-2, then 3 blank rows, then BEB / BCB at rows 6,7.
+    // E (state 5) = stator at (5,6); C (state 3) = non_stator at (5,7).
     SearchConfig cfg = make_config(
         "x = 7, y = 8, rule = LifeHistory\n"
-        ".A$2.A$3A$3$4.BCB$4.BEB!");
+        ".A$2.A$3A$3$4.BEB$4.BCB!");
     Grid g = build_grid(cfg);
 
     assert(g.stator_positions.count({5, 6}) == 1);
@@ -55,10 +59,10 @@ static void test_stator_pinned_alive_across_timesteps() {
     // Single stator with only B cells around it. Without the pin, the forward
     // simulator would mark it unknown/dead at t>=1 because evolution depends on
     // the unknown neighbors. With the pin, it stays =1 at every timestep.
-    // Glider rows 0-2, blank row, then 3B / BCB / 3B at rows 3,4,5. Stator at (5,4).
+    // Glider rows 0-2, blank row, then 3B / BEB / 3B at rows 3,4,5. Stator (E) at (5,4).
     SearchConfig cfg = make_config(
         "x = 8, y = 6, rule = LifeHistory\n"
-        ".A$2.A$3A$4.3B$4.BCB$4.3B!");
+        ".A$2.A$3A$4.3B$4.BEB$4.3B!");
     Grid g = build_grid(cfg);
 
     for (int t = 0; t < g.total_gens; t++) {
@@ -83,10 +87,10 @@ static void test_isolated_stator_throws() {
 //    silently skip the stator's surroundings.
 static void test_zoi_includes_stator_and_non_stator() {
     std::cout << "-- Perturbation region/neighborhood cover stator+non_stator ZOI\n";
-    // Same layout as test 2: stator at (5,6), non_stator at (5,7).
+    // Same layout as test 2: stator (E) at (5,6), non_stator (C) at (5,7).
     SearchConfig cfg = make_config(
         "x = 7, y = 8, rule = LifeHistory\n"
-        ".A$2.A$3A$3$4.BCB$4.BEB!");
+        ".A$2.A$3A$3$4.BEB$4.BCB!");
     Grid g = build_grid(cfg);
 
     // Diagonals of the stator/non_stator cells — only included if the ZOI
@@ -101,13 +105,40 @@ static void test_zoi_includes_stator_and_non_stator() {
     assert(g.catalyst_neighborhood.count({5, 7}) == 1);
 }
 
+// 6. Headline behavior for INIT_OFF (state 4 / D): the cell is a known
+//    catalyst cell (stable value alive, var=1, in the ZOI) but its gen-0
+//    state is DEAD — the distinguishing property versus NON_STATOR, which is
+//    alive at gen 0. This is the behavior that lets a catalyst "fill in".
+static void test_init_off_dead_at_gen0_but_known() {
+    std::cout << "-- INIT_OFF is a known catalyst cell but dead at gen 0\n";
+    // Glider rows 0-2, blank row, then 3B / BDB / 3B at rows 3,4,5. INIT_OFF (D) at (5,4).
+    SearchConfig cfg = make_config(
+        "x = 8, y = 6, rule = LifeHistory\n"
+        ".A$2.A$3A$4.3B$4.BDB$4.3B!");
+    Grid g = build_grid(cfg);
+
+    // Routed to init_off, not the other catalyst sets.
+    assert(g.init_off_positions.count({5, 4}) == 1);
+    assert(g.stator_positions.count({5, 4}) == 0);
+    assert(g.non_stator_positions.count({5, 4}) == 0);
+    assert(g.catalyst_positions.count({5, 4}) == 0);  // not an unknown cell
+
+    // Stable value is alive (known-alive sentinel), so it conditions ZOI.
+    assert(g.catalyst_var_at(5, 4) == 1);
+    assert(g.catalyst_neighborhood.count({5, 4}) == 1);
+
+    // The distinguishing behavior: dead at generation 0.
+    assert(g.cell_at(5, 4, 0) == 0);
+}
+
 int main() {
     std::cout << "=== Stator / non-stator tests ===\n";
-    test_rle_parses_C_and_E();
+    test_rle_parses_catalyst_states();
     test_grid_dispatches_stator_and_non_stator();
     test_stator_pinned_alive_across_timesteps();
     test_isolated_stator_throws();
     test_zoi_includes_stator_and_non_stator();
+    test_init_off_dead_at_gen0_but_known();
     std::cout << "=== All stator tests passed ===\n";
     return 0;
 }

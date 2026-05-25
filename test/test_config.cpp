@@ -56,9 +56,9 @@ int main() {
                 case CellState::DEAD: std::cout << '.'; break;
                 case CellState::ACTIVE: std::cout << 'A'; break;
                 case CellState::UNKNOWN: std::cout << 'B'; break;
-                case CellState::STATOR: std::cout << 'C'; break;
-                case CellState::UNUSED_STATE4: std::cout << 'D'; break;
-                case CellState::NON_STATOR: std::cout << 'E'; break;
+                case CellState::NON_STATOR: std::cout << 'C'; break;
+                case CellState::INIT_OFF: std::cout << 'D'; break;
+                case CellState::STATOR: std::cout << 'E'; break;
             }
         }
         std::cout << "\n";

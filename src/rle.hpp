@@ -3,14 +3,19 @@
 #include <vector>
 #include <stdexcept>
 
-// LifeHistory cell states
+// LifeHistory cell states. State numbers match Barrister's convention so
+// inputs are interchangeable (see Barrister README):
+//   1 active pattern, 2 unknown search region,
+//   3 catalyst ON cell (initially ON, may be perturbed, must recover),
+//   4 catalyst ON cell that is initially OFF (must recover to ON),
+//   5 "stator" ON cell that must not be disturbed.
 enum class CellState : int {
-    DEAD = 0,           // . or b — background dead
-    ACTIVE = 1,         // A or o — active pattern (state 1)
-    UNKNOWN = 2,        // B — unknown/search region (state 2)
-    STATOR = 3,         // C — on in catalyst, can't be active (state 3)
-    UNUSED_STATE4 = 4,  // D — reserved (state 4)
-    NON_STATOR = 5,     // E — on in catalyst, might be active (state 5)
+    DEAD = 0,         // . or b — background dead
+    ACTIVE = 1,       // A or o — active pattern (state 1)
+    UNKNOWN = 2,      // B — unknown/search region (state 2)
+    NON_STATOR = 3,   // C — ON catalyst cell, initially ON, may be active, must recover (state 3)
+    INIT_OFF = 4,     // D — catalyst cell ON in stable form but OFF at gen 0, must recover (state 4)
+    STATOR = 5,       // E — ON catalyst cell that must not be disturbed (state 5)
 };
 
 struct ParsedRLE {
@@ -112,13 +117,13 @@ inline ParsedRLE parse_rle(const std::string& rle) {
                 state = CellState::UNKNOWN;
                 break;
             case 'C':
-                state = CellState::STATOR;
+                state = CellState::NON_STATOR;
                 break;
             case 'D':
-                state = CellState::UNUSED_STATE4;
+                state = CellState::INIT_OFF;
                 break;
             case 'E':
-                state = CellState::NON_STATOR;
+                state = CellState::STATOR;
                 break;
             case '$':
                 y += count;
