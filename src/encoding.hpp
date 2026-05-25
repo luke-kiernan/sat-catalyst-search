@@ -38,10 +38,18 @@ inline void add_impl_or(CadicalSolver& solver, int a, int b, int c) {
 }
 
 // ── 1. Stability constraints ──────────────────────────────────────────────────
-// For each catalyst cell, enforce that its 3x3 neighborhood is stable.
+// For each catalyst cell (unknown + stator + non_stator), enforce that its
+// 3x3 neighborhood is stable.
 inline int encode_stability(CadicalSolver& solver, Grid& grid) {
     int count = 0;
-    for (auto [wx, wy] : grid.catalyst_positions) {
+
+    // Collect all catalyst cells for stability constraints
+    std::set<std::pair<int,int>> all_catalyst;
+    all_catalyst.insert(grid.catalyst_positions.begin(), grid.catalyst_positions.end());
+    all_catalyst.insert(grid.stator_positions.begin(), grid.stator_positions.end());
+    all_catalyst.insert(grid.non_stator_positions.begin(), grid.non_stator_positions.end());
+
+    for (auto [wx, wy] : all_catalyst) {
         std::array<int, 9> nine;
         int i = 0;
         for (int dy = -1; dy <= 1; dy++) {
@@ -132,11 +140,17 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
         perturbed_definition.push_back(-tv.perturbed[t]);
 
         for (auto [wx, wy] : grid.perturbation_region) {
+            // Stator cells never perturb (always alive by definition)
+            // TODO(test): no direct coverage that perturbation is correctly
+            // skipped for stators and constrained for non-stators (stable_val==1
+            // path below). test_stator_encoding only checks end-to-end SAT.
+            if (grid.stator_positions.count({wx, wy})) continue;
+
             int cell_t = grid.cell_at(wx, wy, t);
             int stable_val = grid.catalyst_var_at(wx, wy);
 
             if (stable_val >= 2) {
-                // Catalyst cell: perturbed if cell_t ≠ catalyst_var AND
+                // Unknown catalyst cell: perturbed if cell_t ≠ catalyst_var AND
                 // cell is adjacent to an alive catalyst cell (adj_on).
                 // Without the adj_on condition, dead catalyst cells would
                 // create spurious perturbation when the glider passes through.
@@ -166,6 +180,35 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
                         clause_count++;
                         perturbed_definition.push_back(adj_diff);
                     }
+                }
+            } else if (grid.non_stator_positions.count({wx, wy})) {
+                // Non-stator catalyst cell: stable value = alive (1).
+                // Perturbed if cell_t != 1 (cell turns off during interaction).
+                // adj_on is trivially true (cell is itself a known-alive catalyst).
+                // TODO: add a flag for whether non-stator cells count as perturbation
+                // (for "interaction has started" and active cell counting).
+                auto adj_it = grid.adj_on.find({wx, wy});
+                if (adj_it == grid.adj_on.end()) continue;
+
+                if (cell_t == 1) {
+                    // Known alive = matches stable, no perturbation
+                } else if (cell_t == 0) {
+                    // Known dead ≠ stable alive → always perturbed (adj_on always true)
+                    add_implication(solver, adj_it->second, tv.perturbed[t]);
+                    clause_count++;
+                    perturbed_definition.push_back(adj_it->second);
+                } else {
+                    // SAT variable: perturbed if cell is dead (not alive)
+                    int diff_lit = -(cell_t - 1); // true when cell is dead
+                    int adj_diff = grid.alloc_var();
+                    solver.add_clause(std::vector<int>{-adj_diff, diff_lit});
+                    solver.add_clause(std::vector<int>{-adj_diff, adj_it->second});
+                    solver.add_clause(std::vector<int>{adj_diff, -diff_lit, -adj_it->second});
+                    clause_count += 3;
+
+                    add_implication(solver, adj_diff, tv.perturbed[t]);
+                    clause_count++;
+                    perturbed_definition.push_back(adj_diff);
                 }
             } else {
                 // Non-catalyst cell: perturbed if cell_t != free_evolution(x,y,t)
@@ -248,6 +291,9 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
     // matter if recovered(t) is ever used where the solver needs to infer it.
     for (int t = 0; t < T; t++) {
         for (auto [wx, wy] : grid.catalyst_neighborhood) {
+            // Stator cells: always alive, always match stable → skip
+            if (grid.stator_positions.count({wx, wy})) continue;
+
             auto adj_it = grid.adj_on.find({wx, wy});
             if (adj_it == grid.adj_on.end()) continue;  // no catalyst neighbors
             int adj_lit = adj_it->second;
@@ -256,7 +302,7 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
             int stable_val = grid.catalyst_var_at(wx, wy);
 
             if (stable_val >= 2) {
-                // Catalyst cell: recovered(t) → ¬adj_on ∨ (cell_t ↔ stable_val)
+                // Unknown catalyst cell: recovered(t) → ¬adj_on ∨ (cell_t ↔ stable_val)
                 if (cell_t >= 2 && cell_t != stable_val) {
                     int cell_lit = cell_t - 1;
                     int stable_lit = stable_val - 1;
@@ -270,6 +316,20 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
                     solver.add_clause(std::vector<int>{-tv.recovered[t], -adj_lit, stable_val - 1});
                     clause_count++;
                 }
+            } else if (grid.non_stator_positions.count({wx, wy})) {
+                // Non-stator catalyst cell: stable = alive (1).
+                // recovered(t) → ¬adj_on ∨ cell_t is alive
+                // (adj_on is trivially true here since the cell itself is known-alive,
+                // but we keep it in the clause and let unit propagation simplify)
+                if (cell_t >= 2) {
+                    solver.add_clause(std::vector<int>{-tv.recovered[t], -adj_lit, cell_t - 1});
+                    clause_count++;
+                } else if (cell_t == 0) {
+                    // Known dead ≠ stable alive: recovery impossible if adj_on
+                    solver.add_clause(std::vector<int>{-tv.recovered[t], -adj_lit});
+                    clause_count++;
+                }
+                // cell_t == 1: matches stable, no constraint needed
             } else {
                 // Non-catalyst cell (stable_val=0, dead in stable state):
                 // recovered(t) → ¬adj_on ∨ cell_t is dead
@@ -329,6 +389,10 @@ inline TemporalVars encode_temporal(CadicalSolver& solver, Grid& grid,
 
 // ── 5. Non-triviality ─────────────────────────────────────────────────────────
 inline int encode_nontriviality(CadicalSolver& solver, const Grid& grid) {
+    // If stator/non_stator cells exist, catalyst is already non-trivial
+    if (!grid.stator_positions.empty() || !grid.non_stator_positions.empty())
+        return 0;
+
     BigClause at_least_one;
     for (auto [wx, wy] : grid.catalyst_positions) {
         int var = grid.catalyst_var_at(wx, wy);
@@ -404,10 +468,14 @@ inline int encode_at_most_k(CadicalSolver& solver, Grid& grid,
 // active(x,y,t): cell differs from its stable value, conditioned on adj_on.
 // Only counts as active if the cell is adjacent to an alive catalyst cell.
 // For non-catalyst cells: stable_val=0 (dead), so active = adj_on ∧ (cell alive)
-// For catalyst cells: active = adj_on ∧ (cell_t ≠ stable_val)
-// Both cases capture "stable differs from current."
+// For unknown catalyst cells: active = adj_on ∧ (cell_t ≠ stable_val)
+// For non-stator catalyst cells: active = adj_on ∧ (cell_t ≠ 1) = adj_on ∧ ¬cell_t
+// Stator cells are skipped (never active).
 inline int get_active_literal(Grid& grid, CadicalSolver& solver, int wx, int wy, int t,
                                int& clause_count) {
+    // Stator cells are never active
+    if (grid.stator_positions.count({wx, wy})) return 0;
+
     int cell_t = grid.cell_at(wx, wy, t);
     int stable_val = grid.catalyst_var_at(wx, wy);
 
@@ -421,10 +489,13 @@ inline int get_active_literal(Grid& grid, CadicalSolver& solver, int wx, int wy,
     if (stable_val == 0) {
         // Dead in stable state → differs iff alive at t
         raw_diff = cell_t - 1;
+    } else if (stable_val == 1) {
+        // Non-stator: alive in stable state → differs iff dead at t
+        raw_diff = -(cell_t - 1);
     } else if (cell_t == stable_val) {
         return 0;  // same variable, always equal
     } else {
-        // Catalyst var: differs iff cell_t ≠ stable_val (XOR)
+        // Unknown catalyst var: differs iff cell_t ≠ stable_val (XOR)
         int diff_var = grid.alloc_var();
         int cell_lit = cell_t - 1;
         int stable_lit = stable_val - 1;
@@ -550,19 +621,35 @@ inline int encode_perturbation(CadicalSolver& solver, Grid& grid,
 // ── adj_on computation ───────────────────────────────────────────────────────
 // Populates grid.adj_on: for each cell in catalyst_neighborhood,
 // adj_on = OR of catalyst vars in its 3x3 neighborhood.
+// Stator/non_stator cells (catalyst_var == 1) make adj_on trivially true.
 inline int encode_adj_on(CadicalSolver& solver, Grid& grid) {
     int clause_count = 0;
+
+    // Allocate a single always-true variable for cells with known-alive neighbors
+    int true_var = grid.alloc_var();
+    solver.add_clause(std::vector<int>{true_var});
+    clause_count++;
+
     for (auto [wx, wy] : grid.catalyst_neighborhood) {
+        bool has_known_alive = false;
         std::vector<int> neighbor_lits;
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
                 int nvar = grid.catalyst_var_at(wx + dx, wy + dy);
-                if (nvar >= 2)
+                if (nvar == 1) {
+                    has_known_alive = true; // stator or non_stator neighbor
+                } else if (nvar >= 2) {
                     neighbor_lits.push_back(nvar - 1);
+                }
             }
         }
-        if (neighbor_lits.empty()) continue;
-        if (neighbor_lits.size() == 1) {
+
+        if (has_known_alive) {
+            // Trivially true: at least one neighbor is always alive
+            grid.adj_on[{wx, wy}] = true_var;
+        } else if (neighbor_lits.empty()) {
+            continue;
+        } else if (neighbor_lits.size() == 1) {
             grid.adj_on[{wx, wy}] = neighbor_lits[0];
         } else {
             int adj_var = grid.alloc_var();

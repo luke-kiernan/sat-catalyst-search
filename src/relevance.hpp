@@ -23,8 +23,11 @@ inline std::set<std::pair<int,int>> find_relevant_cells(
     int H = grid.height, W = grid.width;
 
     // Phase 1: mask-based stability propagation
+    std::set<std::pair<int,int>> known_alive;
+    known_alive.insert(grid.stator_positions.begin(), grid.stator_positions.end());
+    known_alive.insert(grid.non_stator_positions.begin(), grid.non_stator_positions.end());
     StableMaskGrid smg;
-    smg.init(grid.catalyst_positions, grid.perturbation_region);
+    smg.init(grid.catalyst_positions, grid.perturbation_region, known_alive);
     smg.propagate();
     auto stable = smg.stable_map();
 
@@ -70,6 +73,15 @@ inline std::set<std::pair<int,int>> find_relevant_cells(
                 for (int gx = 0; gx < W && !restart; gx++) {
                     // Skip cells outside light cone at t+1
                     if (grid.cells[t+1][gy][gx] == 0) continue;
+
+                    // Stator cells are forced alive at all times
+                    {
+                        int wx = gx + grid.ox, wy = gy + grid.oy;
+                        if (grid.stator_positions.count({wx, wy})) {
+                            states[t+1][gy][gx] = 1;
+                            continue;
+                        }
+                    }
 
                     // Stability optimization: if this cell AND all 8 neighbors
                     // match the stable catalyst state (known or still unknown),
@@ -172,28 +184,43 @@ inline std::set<std::pair<int,int>> find_relevant_cells(
                         continue;
                     }
 
-                    // Ambiguous — peek unknown cells
-                    if (center == -1) {
-                        int wx = gx + grid.ox, wy = gy + grid.oy;
-                        if (grid.catalyst_positions.count({wx, wy})) {
-                            peek(wx, wy);
-                            restart = true;
-                            continue;
+                    // Ambiguous — peek unknown cells, preferring dead cells first.
+                    // Dead cells resolve ambiguity without narrowing the search
+                    // space, avoiding unnecessary relevance marks on alive cells
+                    // (like distant still life components).
+                    {
+                        std::vector<std::pair<int,int>> candidates;
+                        if (center == -1) {
+                            int wx = gx + grid.ox, wy = gy + grid.oy;
+                            if (grid.catalyst_positions.count({wx, wy}))
+                                candidates.push_back({wx, wy});
                         }
-                    }
-
-                    for (int dy = -1; dy <= 1 && !restart; dy++) {
-                        for (int dx = -1; dx <= 1 && !restart; dx++) {
-                            if (dx == 0 && dy == 0) continue;
-                            int ny = grid.wrap_y(gy + dy);
-                            int nx = grid.wrap_x(gx + dx);
-                            if (states[t][ny][nx] == -1) {
-                                int wx = nx + grid.ox, wy = ny + grid.oy;
-                                if (grid.catalyst_positions.count({wx, wy})) {
-                                    peek(wx, wy);
-                                    restart = true;
+                        for (int dy = -1; dy <= 1; dy++)
+                            for (int dx = -1; dx <= 1; dx++) {
+                                if (dx == 0 && dy == 0) continue;
+                                int ny = grid.wrap_y(gy + dy);
+                                int nx = grid.wrap_x(gx + dx);
+                                if (states[t][ny][nx] == -1) {
+                                    int wx = nx + grid.ox, wy = ny + grid.oy;
+                                    if (grid.catalyst_positions.count({wx, wy}))
+                                        candidates.push_back({wx, wy});
                                 }
                             }
+                        // Sort: dead cells first.
+                        // TODO: among dead cells, prefer those close to
+                        // already-relevant cells to avoid marking distant
+                        // cells as relevant unnecessarily.
+                        std::sort(candidates.begin(), candidates.end(),
+                            [&](auto& a, auto& b) {
+                                int va = grid.catalyst_var_at(a.first, a.second);
+                                int vb = grid.catalyst_var_at(b.first, b.second);
+                                bool a_alive = (va >= 2) ? result.solution.count(va - 1) > 0 : (va == 1);
+                                bool b_alive = (vb >= 2) ? result.solution.count(vb - 1) > 0 : (vb == 1);
+                                return !a_alive && b_alive;
+                            });
+                        if (!candidates.empty()) {
+                            peek(candidates[0].first, candidates[0].second);
+                            restart = true;
                         }
                     }
                 }
@@ -219,6 +246,10 @@ inline std::vector<int> smart_blocking_clause(
         clause.push_back(alive ? -sat_var : sat_var);
     }
 
+    // TODO(test): the empty-relevant fallback is uncovered. Hard to trigger
+    // organically — would need a non-empty catalyst where forward-sim resolves
+    // every cell without peeking. Construct synthetically with a hand-built
+    // Grid + SolverResult rather than from a solved instance.
     if (clause.empty()) {
         for (auto [wx, wy] : grid.catalyst_positions) {
             int var = grid.catalyst_var_at(wx, wy);

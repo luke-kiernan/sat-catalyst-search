@@ -69,12 +69,16 @@ struct StableMaskGrid {
     std::map<std::pair<int,int>, uint8_t> masks;
 
     // Initialize masks given catalyst positions and perturbation region (ZOI).
+    // known_alive = stator + non_stator positions (always alive in stable state).
     void init(const std::set<std::pair<int,int>>& catalyst_positions,
-              const std::set<std::pair<int,int>>& perturbation_region) {
+              const std::set<std::pair<int,int>>& perturbation_region,
+              const std::set<std::pair<int,int>>& known_alive = {}) {
         for (auto& pos : catalyst_positions)
             masks[pos] = 0; // all options open
+        for (auto& pos : known_alive)
+            masks[pos] = SM::DEAD; // known alive, rule out dead options
         for (auto& pos : perturbation_region)
-            if (!catalyst_positions.count(pos))
+            if (!catalyst_positions.count(pos) && !known_alive.count(pos))
                 masks[pos] = SM::LIVE; // dead, rule out alive options
     }
 
@@ -214,6 +218,10 @@ struct Grid {
     // The set of (world_x, world_y) positions that are unknown/catalyst cells
     std::set<std::pair<int,int>> catalyst_positions;
 
+    // Known catalyst cells (stator = always on, non_stator = on but might be active)
+    std::set<std::pair<int,int>> stator_positions;
+    std::set<std::pair<int,int>> non_stator_positions;
+
     // The perturbation region: ZOI of unknown cells
     // Set of (world_x, world_y) positions
     std::set<std::pair<int,int>> perturbation_region;
@@ -289,7 +297,7 @@ inline Grid build_grid(const SearchConfig& config) {
                 active_max_x = std::max(active_max_x, x);
                 active_max_y = std::max(active_max_y, y);
             }
-            if (s == CellState::UNKNOWN) {
+            if (s == CellState::UNKNOWN || s == CellState::STATOR || s == CellState::NON_STATOR) {
                 unknown_min_x = std::min(unknown_min_x, x);
                 unknown_min_y = std::min(unknown_min_y, y);
                 unknown_max_x = std::max(unknown_max_x, x);
@@ -317,19 +325,32 @@ inline Grid build_grid(const SearchConfig& config) {
 
     for (int y = 0; y < pattern.height; y++) {
         for (int x = 0; x < pattern.width; x++) {
-            if (pattern.grid[y][x] == CellState::UNKNOWN) {
-                int gx = x - grid.ox;
-                int gy = y - grid.oy;
+            int gx = x - grid.ox;
+            int gy = y - grid.oy;
+            CellState s = pattern.grid[y][x];
+            if (s == CellState::UNKNOWN) {
                 int var = grid.alloc_var();
                 grid.catalyst_vars[gy][gx] = var;
                 grid.catalyst_positions.insert({x, y});
+            } else if (s == CellState::STATOR) {
+                grid.catalyst_vars[gy][gx] = 1; // known alive
+                grid.stator_positions.insert({x, y});
+            } else if (s == CellState::NON_STATOR) {
+                grid.catalyst_vars[gy][gx] = 1; // known alive
+                grid.non_stator_positions.insert({x, y});
             }
         }
     }
 
-    // Build perturbation region: ZOI (zone of influence) of unknown cells
-    // = all cells within distance 1 of any unknown cell
-    for (auto [cx, cy] : grid.catalyst_positions) {
+    // All catalyst cell positions (unknown + stator + non_stator)
+    std::set<std::pair<int,int>> all_catalyst;
+    all_catalyst.insert(grid.catalyst_positions.begin(), grid.catalyst_positions.end());
+    all_catalyst.insert(grid.stator_positions.begin(), grid.stator_positions.end());
+    all_catalyst.insert(grid.non_stator_positions.begin(), grid.non_stator_positions.end());
+
+    // Build perturbation region: ZOI (zone of influence) of all catalyst cells
+    // = all cells within distance 1 of any catalyst cell
+    for (auto [cx, cy] : all_catalyst) {
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
                 grid.perturbation_region.insert({cx + dx, cy + dy});
@@ -339,13 +360,13 @@ inline Grid build_grid(const SearchConfig& config) {
 
     // Build catalyst neighborhood: catalyst cells + dead cells adjacent to catalyst
     // (cells constrained by recovered(t))
-    for (auto [cx, cy] : grid.catalyst_positions) {
+    for (auto [cx, cy] : all_catalyst) {
         grid.catalyst_neighborhood.insert({cx, cy});
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
                 if (dx == 0 && dy == 0) continue;
                 int nx = cx + dx, ny = cy + dy;
-                if (grid.catalyst_positions.count({nx, ny}) == 0) {
+                if (all_catalyst.count({nx, ny}) == 0) {
                     // Adjacent but not a catalyst cell → dead in stable state
                     grid.catalyst_neighborhood.insert({nx, ny});
                 }
@@ -369,6 +390,8 @@ inline Grid build_grid(const SearchConfig& config) {
 
             switch (s) {
                 case CellState::ACTIVE:
+                case CellState::STATOR:
+                case CellState::NON_STATOR:
                     grid.cells[0][gy][gx] = 1;
                     break;
                 case CellState::UNKNOWN:
@@ -387,8 +410,11 @@ inline Grid build_grid(const SearchConfig& config) {
     // unknown catalyst cells.
 
     // Propagate stability masks
+    std::set<std::pair<int,int>> known_alive;
+    known_alive.insert(grid.stator_positions.begin(), grid.stator_positions.end());
+    known_alive.insert(grid.non_stator_positions.begin(), grid.non_stator_positions.end());
     StableMaskGrid smg;
-    smg.init(grid.catalyst_positions, grid.perturbation_region);
+    smg.init(grid.catalyst_positions, grid.perturbation_region, known_alive);
     smg.propagate();
     auto stable = smg.stable_map();
 
@@ -396,6 +422,13 @@ inline Grid build_grid(const SearchConfig& config) {
     // -1 means "depends on unknown catalyst cells, needs SAT variable"
     std::vector<std::vector<std::vector<int>>> known(grid.total_gens,
         std::vector<std::vector<int>>(grid.height, std::vector<int>(grid.width, 0)));
+
+    // Build set of stator grid positions (forced alive at all times)
+    std::set<std::pair<int,int>> stator_grid_pos;
+    for (auto [wx, wy] : grid.stator_positions) {
+        int gx = wx - grid.ox, gy = wy - grid.oy;
+        stator_grid_pos.insert({gx, gy});
+    }
 
     // Initialize t=0
     for (int gy = 0; gy < grid.height; gy++) {
@@ -416,6 +449,39 @@ inline Grid build_grid(const SearchConfig& config) {
     for (int t = 0; t + 1 < grid.total_gens; t++) {
         for (int gy = 0; gy < grid.height; gy++) {
             for (int gx = 0; gx < grid.width; gx++) {
+
+                // Stator cells are forced alive at all times.
+                // Check that evolution doesn't definitively kill them.
+                if (stator_grid_pos.count({gx, gy})) {
+                    int alive_n = 0, unknown_n = 0;
+                    for (int dy = -1; dy <= 1; dy++)
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (dx == 0 && dy == 0) continue;
+                            int ny = grid.wrap_y(gy + dy);
+                            int nx = grid.wrap_x(gx + dx);
+                            int s = known[t][ny][nx];
+                            if (s == 1) alive_n++;
+                            else if (s < 0) unknown_n++;
+                        }
+                    // alive cell survives iff 2 or 3 neighbors
+                    // TODO: could infer unknown neighbor values here, e.g.
+                    // alive_n==3 → all unknown neighbors must be dead
+                    // TODO(test): test_stator only covers the underpopulation case
+                    // (hi < 2). Add a case for overpopulation (alive_n > 3, e.g. a
+                    // stator surrounded by 4+ known-alive neighbors).
+                    int hi = alive_n + unknown_n;
+                    if (hi < 2 || alive_n > 3) {
+                        int wx = gx + grid.ox, wy = gy + grid.oy;
+                        throw std::runtime_error(
+                            "Stator cell at (" + std::to_string(wx) + "," +
+                            std::to_string(wy) + ") is forced dead at t=" +
+                            std::to_string(t+1) + " (neighbors: " +
+                            std::to_string(alive_n) + " alive, " +
+                            std::to_string(unknown_n) + " unknown)");
+                    }
+                    known[t+1][gy][gx] = 1;
+                    continue;
+                }
 
                 // Stability optimization: if cell + all neighbors are either
                 // known or stable-unknown, the still-life is unperturbed.
@@ -508,8 +574,6 @@ inline Grid build_grid(const SearchConfig& config) {
 
         for (int gy = 0; gy < grid.height; gy++) {
             for (int gx = 0; gx < grid.width; gx++) {
-                int wx = gx + grid.ox, wy = gy + grid.oy;
-
                 int k = known[t][gy][gx];
                 if (k >= 0) {
                     // Known constant (0 or 1)

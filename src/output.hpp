@@ -133,7 +133,7 @@ inline FullSolution extract_full_solution(const Grid& grid, const SolverResult& 
         for (int x = 0; x < pattern.width; x++) {
             CellState s = pattern.grid[y][x];
             if (s == CellState::ACTIVE || s == CellState::UNKNOWN ||
-                s == CellState::FORCED_ON || s == CellState::FORCED_ON_INIT_OFF) {
+                s == CellState::STATOR || s == CellState::NON_STATOR) {
                 min_x = std::min(min_x, x);
                 min_y = std::min(min_y, y);
                 max_x = std::max(max_x, x);
@@ -153,7 +153,7 @@ inline FullSolution extract_full_solution(const Grid& grid, const SolverResult& 
     for (int y = min_y; y <= max_y; y++) {
         for (int x = min_x; x <= max_x; x++) {
             CellState s = pattern.grid[y][x];
-            if (s == CellState::ACTIVE || s == CellState::FORCED_ON) {
+            if (s == CellState::ACTIVE || s == CellState::STATOR || s == CellState::NON_STATOR) {
                 sol.cells[y - min_y][x - min_x] = true;
             } else if (s == CellState::UNKNOWN) {
                 int var = grid.catalyst_var_at(x, y);
@@ -179,7 +179,7 @@ inline FullSolution extract_full_solution_from_catalyst(const CatalystSolution& 
         for (int x = 0; x < pattern.width; x++) {
             CellState s = pattern.grid[y][x];
             if (s == CellState::ACTIVE || s == CellState::UNKNOWN ||
-                s == CellState::FORCED_ON || s == CellState::FORCED_ON_INIT_OFF) {
+                s == CellState::STATOR || s == CellState::NON_STATOR) {
                 min_x = std::min(min_x, x);
                 min_y = std::min(min_y, y);
                 max_x = std::max(max_x, x);
@@ -199,7 +199,7 @@ inline FullSolution extract_full_solution_from_catalyst(const CatalystSolution& 
     for (int y = min_y; y <= max_y; y++) {
         for (int x = min_x; x <= max_x; x++) {
             CellState s = pattern.grid[y][x];
-            if (s == CellState::ACTIVE || s == CellState::FORCED_ON) {
+            if (s == CellState::ACTIVE || s == CellState::STATOR || s == CellState::NON_STATOR) {
                 sol.cells[y - min_y][x - min_x] = true;
             } else if (s == CellState::UNKNOWN) {
                 // Look up in the CatalystSolution

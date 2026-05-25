@@ -5,12 +5,12 @@
 
 // LifeHistory cell states
 enum class CellState : int {
-    DEAD = 0,       // . or b — background dead
-    ACTIVE = 1,     // A or o — active pattern (state 1)
-    UNKNOWN = 2,    // B — unknown/search region (state 2)
-    FORCED_ON = 3,  // C — forced ON (state 3)
-    FORCED_ON_INIT_OFF = 4, // D — forced ON initially OFF (state 4)
-    // State 5 (E) = stator, deferred to v2
+    DEAD = 0,           // . or b — background dead
+    ACTIVE = 1,         // A or o — active pattern (state 1)
+    UNKNOWN = 2,        // B — unknown/search region (state 2)
+    STATOR = 3,         // C — on in catalyst, can't be active (state 3)
+    UNUSED_STATE4 = 4,  // D — reserved (state 4)
+    NON_STATOR = 5,     // E — on in catalyst, might be active (state 5)
 };
 
 struct ParsedRLE {
@@ -20,7 +20,7 @@ struct ParsedRLE {
 };
 
 // Parse a LifeHistory RLE string.
-// Supports: b/. = dead, o/A = active, B = unknown, C = forced ON, D = forced ON init OFF
+// Supports: b/. = dead, o/A = active, B = unknown, C = stator, D = unused, E = non-stator
 // Run-length encoding with digits, $ = newline, ! = end
 inline ParsedRLE parse_rle(const std::string& rle) {
     ParsedRLE result;
@@ -112,10 +112,13 @@ inline ParsedRLE parse_rle(const std::string& rle) {
                 state = CellState::UNKNOWN;
                 break;
             case 'C':
-                state = CellState::FORCED_ON;
+                state = CellState::STATOR;
                 break;
             case 'D':
-                state = CellState::FORCED_ON_INIT_OFF;
+                state = CellState::UNUSED_STATE4;
+                break;
+            case 'E':
+                state = CellState::NON_STATOR;
                 break;
             case '$':
                 y += count;

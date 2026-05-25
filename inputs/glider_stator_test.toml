@@ -1,0 +1,14 @@
+first-active-range = [1, 22]
+active-window-range = [2, 12]
+min-stable-interval = 3
+
+max-active-cells = 6
+ever-active-bounds = [4, 4]
+
+pattern-center = [5, 3]
+# Snake at (6,4): ObOO / OObO
+# Fix the left column (two on cells) as stator (C), leave rest unknown (B)
+pattern = '''
+x = 10, y = 11, rule = LifeHistory
+.A$2.A$3A2$4.6B$4.C5B$4.6B$4.6B$4.6B$4.6B$4.6B!
+'''

@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -I src -I solvers/cadical/src -I toml
+CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -I src -I solvers/cadical/src -I toml/single_include
 LDFLAGS = -L solvers/cadical/build -lcadical
 
 CADICAL_LIB = solvers/cadical/build/libcadical.a

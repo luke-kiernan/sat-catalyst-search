@@ -83,7 +83,10 @@ int main(int argc, char* argv[]) {
     std::cout << "Grid: " << grid.width << "x" << grid.height
               << ", origin=(" << grid.ox << "," << grid.oy << ")\n";
     std::cout << "Catalyst cells: " << grid.catalyst_positions.size()
-              << ", perturbation region: " << grid.perturbation_region.size() << "\n\n";
+              << " unknown, " << grid.stator_positions.size()
+              << " stator, " << grid.non_stator_positions.size()
+              << " non-stator\n";
+    std::cout << "Perturbation region: " << grid.perturbation_region.size() << "\n\n";
 
     // Encode
     std::cout << "Encoding...\n";
