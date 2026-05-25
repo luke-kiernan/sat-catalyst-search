@@ -65,14 +65,15 @@ inline CatalystSolution extract_catalyst(const Grid& grid, const SolverResult& r
 }
 
 // Convert catalyst solution to RLE string
-inline std::string catalyst_to_rle(const CatalystSolution& sol) {
+inline std::string catalyst_to_rle(const CatalystSolution& sol,
+                                    const std::string& rule_name) {
     if (sol.population == 0) return "";
 
     int h = sol.cells.size();
     int w = sol.cells[0].size();
 
     std::string rle = "x = " + std::to_string(w) + ", y = " + std::to_string(h)
-                    + ", rule = B3/S23\n";
+                    + ", rule = " + rule_name + "\n";
 
     for (int y = 0; y < h; y++) {
         if (y > 0) rle += "$";
@@ -225,7 +226,8 @@ inline int round_up_to(int val, int m) {
 // Layout: SUMMARY_COLS solutions per row, rows grow downward.
 // Spacing aligned to multiples of 10.
 inline void write_summary_rle(const std::vector<FullSolution>& solutions,
-                               std::ostream& out) {
+                               std::ostream& out,
+                               const std::string& rule_name) {
     if (solutions.empty()) return;
 
     int cell_w = solutions[0].width;
@@ -257,7 +259,7 @@ inline void write_summary_rle(const std::vector<FullSolution>& solutions,
     }
 
     // Write RLE header
-    out << "x = " << total_w << ", y = " << total_h << ", rule = B3/S23\n";
+    out << "x = " << total_w << ", y = " << total_h << ", rule = " << rule_name << "\n";
 
     // Encode RLE
     int pending_eol = 0;
@@ -384,7 +386,8 @@ inline void write_debug_rle(const std::vector<FullSolution>& solutions,
 
 // Write summary RLE to file derived from input filename.
 inline std::string write_summary_rle_file(const std::vector<FullSolution>& solutions,
-                                           const std::string& input_filename) {
+                                           const std::string& input_filename,
+                                           const std::string& rule_name) {
     // Derive output filename: replace .toml with _results.rle
     std::string out_name = input_filename;
     auto dot = out_name.rfind('.');
@@ -398,7 +401,7 @@ inline std::string write_summary_rle_file(const std::vector<FullSolution>& solut
         return "";
     }
 
-    write_summary_rle(solutions, out);
+    write_summary_rle(solutions, out, rule_name);
     return out_name;
 }
 

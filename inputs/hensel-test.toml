@@ -1,0 +1,16 @@
+first-active-range = [8, 12]
+active-window-range = [0, 30]
+min-stable-interval = 5
+pattern-center = [10,10]
+
+max-active-cells = 10
+ever-active-bounds = [6, 6]
+
+stabilise-results = true
+minimise-results = true
+rule = 'B3/S23-a5'
+
+pattern = '''
+x = 10, y = 8, rule = LifeHistory
+.A$2A$.A2.6B$4.6B$4.6B$4.6B$4.6B$4.6B!
+'''

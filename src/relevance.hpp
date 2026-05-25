@@ -10,6 +10,11 @@
 // as many cells as possible. When the CGOL outcome is still ambiguous,
 // peek at the solution and mark those catalyst cells as relevant.
 //
+// TODO(Phase 5): the forward sim below uses CGoL-specific {2,3} thresholds
+// and the StableMaskGrid (also CGoL-specific). Phase 5 replaces this entire
+// function with a coarser "if cell differs from free evolution, mark its
+// 3x3 catalyst neighbors relevant" approach that is rule-agnostic.
+//
 // SM namespace and StableMaskGrid are defined in grid.hpp (shared with
 // the pre-processing forward simulation).
 

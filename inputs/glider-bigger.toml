@@ -1,0 +1,15 @@
+first-active-range = [8, 12]
+active-window-range = [0, 30]
+min-stable-interval = 5
+pattern-center = [10,10]
+
+max-active-cells = 6
+ever-active-bounds = [6, 6]
+
+stabilise-results = true
+minimise-results = true
+
+pattern = '''
+x = 19, y = 15, rule = LifeHistory
+5.A$6.A$4.3A3$19B$19B$19B$19B$19B$19B$19B$19B$19B$19B!
+'''

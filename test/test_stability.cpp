@@ -3,6 +3,13 @@
 #include <vector>
 #include <string>
 #include "sat_stability.hpp"
+#include "rule.hpp"
+
+// Implicants for the default CGoL rule, used throughout this file.
+static const std::vector<std::pair<int,int>>& cgol_implicants() {
+    static const auto v = compute_stability_implicants(parse_rule("B3/S23"));
+    return v;
+}
 
 // Check if all clauses are satisfied given a mapping: SAT_var -> bool
 bool all_clauses_satisfied(const StabilityClauseList& clauses,
@@ -47,7 +54,7 @@ bool test_pattern_stability(const std::vector<std::string>& grid, int cx, int cy
         }
     }
 
-    StabilityClauseList clauses = generate_stability_clauses(nine);
+    StabilityClauseList clauses = generate_stability_clauses(nine, cgol_implicants());
 
     // Build assignment from grid
     int max_var = h * w + 1;  // max SAT var index
@@ -245,7 +252,7 @@ void test_non_still_lifes() {
 
 void test_prime_implicant_count() {
     std::cout << "\n=== Stability prime implicant stats ===\n";
-    std::cout << "Number of prime implicants: " << stabilityPrimeImplicants.size() << "\n";
+    std::cout << "Number of prime implicants: " << cgol_implicants().size() << "\n";
     // The assertion in the static initializer already verified correctness for all 512 configs
     std::cout << "Truth table verification: PASS (checked during static init)\n";
 }

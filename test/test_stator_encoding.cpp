@@ -25,7 +25,8 @@ static void run_case(const std::string& path,
 
     CadicalSolver solver;
     EncodingStats stats;
-    TemporalVars tv = encode_all(solver, grid, cfg, stats);
+    RuleEncoding rule_enc = compute_rule_encoding(cfg.rule);
+    TemporalVars tv = encode_all(solver, grid, cfg, stats, rule_enc);
     (void)tv;
 
     SolverResult result = solver.solve();

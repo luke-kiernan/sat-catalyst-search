@@ -6,12 +6,16 @@
 #include <sstream>
 #include "toml.hpp"
 #include "rle.hpp"
+#include "rule.hpp"
 
 struct SearchConfig {
     // Parsed pattern
     ParsedRLE pattern;
     int center_x = 0;
     int center_y = 0;
+
+    // Cellular automaton rule (default B3/S23 for backward compatibility).
+    Rule rule = parse_rule("B3/S23");
 
     // Timing
     std::array<int, 2> first_active_range = {0, 0};
@@ -57,6 +61,10 @@ inline SearchConfig parse_config(const std::string& filename) {
     config.active_window_range = {awr[0], awr[1]};
 
     config.min_stable_interval = toml::find<int>(data, "min-stable-interval");
+
+    // Optional rule (defaults to B3/S23).
+    if (data.contains("rule"))
+        config.rule = parse_rule(toml::find<std::string>(data, "rule"));
 
     // Optional perturbation limits
     if (data.contains("max-active-cells"))

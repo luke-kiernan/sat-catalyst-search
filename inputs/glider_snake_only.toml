@@ -1,0 +1,9 @@
+first-active-range = [1, 22]
+active-window-range = [2, 12]
+min-stable-interval = 3
+
+pattern-center = [5, 3]
+pattern = '''
+x = 6, y = 11, rule = LifeHistory
+.A$2.A$3A5$4.2B$4.2B$4.2B$4.2B!
+'''

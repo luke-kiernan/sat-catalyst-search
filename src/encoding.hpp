@@ -37,10 +37,26 @@ inline void add_impl_or(CadicalSolver& solver, int a, int b, int c) {
     solver.add_clause(std::vector<int>{-a, b, c});
 }
 
+// Bundles the precomputed prime-implicant lists for a rule. Built once per
+// run (compute_*_implicants is O(2^bits) and not free) and passed by const
+// reference to the per-cell clause generators.
+struct RuleEncoding {
+    std::vector<std::pair<int,int>> stability_implicants;
+    std::vector<std::pair<int,int>> evolution_implicants;
+};
+
+inline RuleEncoding compute_rule_encoding(const Rule& rule) {
+    return {
+        compute_stability_implicants(rule),
+        compute_evolution_implicants(rule),
+    };
+}
+
 // ── 1. Stability constraints ──────────────────────────────────────────────────
 // For each catalyst cell (unknown + stator + non_stator), enforce that its
 // 3x3 neighborhood is stable.
-inline int encode_stability(CadicalSolver& solver, Grid& grid) {
+inline int encode_stability(CadicalSolver& solver, Grid& grid,
+                            const RuleEncoding& enc) {
     int count = 0;
 
     // Collect all catalyst cells for stability constraints
@@ -59,7 +75,7 @@ inline int encode_stability(CadicalSolver& solver, Grid& grid) {
                 nine[i++] = grid.catalyst_var_at(nx, ny);
             }
         }
-        auto clauses = generate_stability_clauses(nine);
+        auto clauses = generate_stability_clauses(nine, enc.stability_implicants);
         for (const auto& c : clauses) {
             solver.add_clause(c);
         }
@@ -70,7 +86,8 @@ inline int encode_stability(CadicalSolver& solver, Grid& grid) {
 
 // ── 2. Evolution constraints ──────────────────────────────────────────────────
 // For each cell in the light cone at each transition t→t+1.
-inline int encode_evolution(CadicalSolver& solver, Grid& grid) {
+inline int encode_evolution(CadicalSolver& solver, Grid& grid,
+                            const RuleEncoding& enc) {
     int count = 0;
     for (int t = 0; t + 1 < grid.total_gens; t++) {
         for (int gy = 0; gy < grid.height; gy++) {
@@ -91,7 +108,7 @@ inline int encode_evolution(CadicalSolver& solver, Grid& grid) {
                 }
                 ten[9] = output;
 
-                auto clauses = generate_evolution_clauses(ten);
+                auto clauses = generate_evolution_clauses(ten, enc.evolution_implicants);
                 for (const auto& c : clauses) {
                     solver.add_clause(c);
                 }
@@ -670,15 +687,20 @@ inline int encode_adj_on(CadicalSolver& solver, Grid& grid) {
 
 // ── Main encoding entry point ─────────────────────────────────────────────────
 inline TemporalVars encode_all(CadicalSolver& solver, Grid& grid,
-                                const SearchConfig& config, EncodingStats& stats) {
+                                const SearchConfig& config, EncodingStats& stats,
+                                const RuleEncoding& rule_enc) {
     auto start = std::chrono::high_resolution_clock::now();
+
+    std::cout << "  Rule '" << config.rule.canonical << "': "
+              << rule_enc.stability_implicants.size() << " stability + "
+              << rule_enc.evolution_implicants.size() << " evolution implicants\n";
 
     encode_adj_on(solver, grid);
 
-    stats.stability_clauses = encode_stability(solver, grid);
+    stats.stability_clauses = encode_stability(solver, grid, rule_enc);
     std::cout << "  Stability: " << stats.stability_clauses << " clauses" << std::endl;
 
-    stats.evolution_clauses = encode_evolution(solver, grid);
+    stats.evolution_clauses = encode_evolution(solver, grid, rule_enc);
     std::cout << "  Evolution: " << stats.evolution_clauses << " clauses" << std::endl;
 
     int temporal_count = 0;

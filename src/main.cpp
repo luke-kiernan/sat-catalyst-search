@@ -8,7 +8,8 @@
 // Uses a second SAT solver with stability constraints + relevant cell fixings,
 // binary searching on the number of non-relevant alive cells.
 CatalystSolution minimize_catalyst(Grid& grid, const SolverResult& result,
-                                    const std::set<std::pair<int,int>>& relevant) {
+                                    const std::set<std::pair<int,int>>& relevant,
+                                    const RuleEncoding& rule_enc) {
     // Collect non-relevant catalyst SAT variables
     std::vector<int> free_vars;
     for (auto [wx, wy] : grid.catalyst_positions) {
@@ -25,7 +26,8 @@ CatalystSolution minimize_catalyst(Grid& grid, const SolverResult& result,
         int mid = (lo + hi) / 2;
 
         CadicalSolver attempt;
-        encode_stability(attempt, grid);
+        encode_stability(attempt, grid, rule_enc);
+        encode_nontriviality(attempt, grid);
 
         // Fix relevant cells
         for (auto [wx, wy] : relevant) {
@@ -92,7 +94,8 @@ int main(int argc, char* argv[]) {
     std::cout << "Encoding...\n";
     CadicalSolver solver;
     EncodingStats stats;
-    TemporalVars tv = encode_all(solver, grid, config, stats);
+    RuleEncoding rule_enc = compute_rule_encoding(config.rule);
+    TemporalVars tv = encode_all(solver, grid, config, stats, rule_enc);
     std::cout << "\n";
 
     // Install SIGINT handler for clean interruption
@@ -124,12 +127,12 @@ int main(int argc, char* argv[]) {
         // Extract relevant cells and minimize catalyst
         solution_count++;
         auto relevant = find_relevant_cells(grid, result);
-        CatalystSolution sol = minimize_catalyst(grid, result, relevant);
+        CatalystSolution sol = minimize_catalyst(grid, result, relevant, rule_enc);
         std::cout << "--- Solution " << solution_count
                   << " (pop=" << sol.population
                   << ", pos=" << sol.min_x << "," << sol.min_y << ") ---\n";
         print_catalyst(sol);
-        std::cout << catalyst_to_rle(sol) << "\n\n";
+        std::cout << catalyst_to_rle(sol, config.rule.canonical) << "\n\n";
         std::cout << "Relevant: " << relevant.size() << " / "
                   << grid.catalyst_positions.size() << " catalyst cells\n";
 
@@ -156,7 +159,7 @@ int main(int argc, char* argv[]) {
 
     // Write summary RLE (minimized) and debug RLE (original with relevance)
     if (!all_solutions.empty()) {
-        std::string rle_file = write_summary_rle_file(all_solutions, argv[1]);
+        std::string rle_file = write_summary_rle_file(all_solutions, argv[1], config.rule.canonical);
         if (!rle_file.empty())
             std::cout << "Results written to " << rle_file << "\n";
         std::string debug_file = write_debug_rle_file(all_debug_solutions, argv[1]);

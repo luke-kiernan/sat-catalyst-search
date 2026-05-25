@@ -5,6 +5,12 @@
 #include <cstdlib>
 #include <string>
 #include "sat_evolution.hpp"
+#include "rule.hpp"
+
+static const std::vector<std::pair<int,int>>& cgol_implicants() {
+    static const auto v = compute_evolution_implicants(parse_rule("B3/S23"));
+    return v;
+}
 
 // Compute CGOL successor of a grid
 std::vector<std::string> cgol_step(const std::vector<std::string>& grid) {
@@ -89,7 +95,7 @@ void test_evolution(const std::vector<std::string>& gen0, const std::string& nam
                 }
             }
             ten[9] = var_idx(x, y, 1);
-            auto clauses = generate_evolution_clauses(ten);
+            auto clauses = generate_evolution_clauses(ten, cgol_implicants());
             all_clauses.insert(all_clauses.end(), clauses.begin(), clauses.end());
         }
     }
@@ -121,7 +127,7 @@ void test_evolution(const std::vector<std::string>& gen0, const std::string& nam
 
 void test_prime_implicant_count() {
     std::cout << "=== Evolution prime implicant stats ===\n";
-    std::cout << "Number of prime implicants: " << evolutionPrimeImplicants.size() << "\n";
+    std::cout << "Number of prime implicants: " << cgol_implicants().size() << "\n";
     std::cout << "Truth table verification: PASS (checked during static init)\n";
 }
 

@@ -5,6 +5,18 @@
 #include <algorithm>
 #include <iostream>
 #include "config.hpp"
+#include "rule.hpp"
+
+// Pack a 3x3 neighborhood into a 9-bit int with row-major bit order:
+//   bit 0 1 2     NW  N  NE
+//   bit 3 4 5     W   C  E
+//   bit 6 7 8     SW  S  SE
+// Matches Rule's encoding (bit 4 = center).
+inline int pack_neighborhood(bool nw, bool n, bool ne,
+                              bool w,  bool c, bool e,
+                              bool sw, bool s, bool se) {
+    return nw | (n<<1) | (ne<<2) | (w<<3) | (c<<4) | (e<<5) | (sw<<6) | (s<<7) | (se<<8);
+}
 
 // ── Mask-based stability tracking ──
 // For each cell in/near the catalyst, track which (state, neighbor_count)
@@ -404,250 +416,131 @@ inline Grid build_grid(const SearchConfig& config) {
         }
     }
 
-    // ── Phase 2: Forward-simulate to find known cells at t>0 ──
-    // Uses mask-based stability to resolve cells near the catalyst without
-    // SAT variables, only allocating variables where the outcome depends on
-    // unknown catalyst cells.
-
-    // Propagate stability masks
-    std::set<std::pair<int,int>> known_alive;
-    known_alive.insert(grid.stator_positions.begin(), grid.stator_positions.end());
-    known_alive.insert(grid.non_stator_positions.begin(), grid.non_stator_positions.end());
-    StableMaskGrid smg;
-    smg.init(grid.catalyst_positions, grid.perturbation_region, known_alive);
-    smg.propagate();
-    auto stable = smg.stable_map();
-
-    // Forward simulation: known[t][gy][gx] = 0/1/-1
-    // -1 means "depends on unknown catalyst cells, needs SAT variable"
-    std::vector<std::vector<std::vector<int>>> known(grid.total_gens,
-        std::vector<std::vector<int>>(grid.height, std::vector<int>(grid.width, 0)));
-
-    // Build set of stator grid positions (forced alive at all times)
-    std::set<std::pair<int,int>> stator_grid_pos;
-    for (auto [wx, wy] : grid.stator_positions) {
-        int gx = wx - grid.ox, gy = wy - grid.oy;
-        stator_grid_pos.insert({gx, gy});
-    }
-
-    // Initialize t=0
-    for (int gy = 0; gy < grid.height; gy++) {
-        for (int gx = 0; gx < grid.width; gx++) {
-            int val = grid.cells[0][gy][gx];
-            if (val == 0) known[0][gy][gx] = 0;
-            else if (val == 1) known[0][gy][gx] = 1;
-            else known[0][gy][gx] = -1; // catalyst variable
-        }
-    }
-
-    // Simulate t>0 (toroidal, iterate over full grid)
-    // Known values: 0=dead, 1=alive, -1=stable unknown, -2=unstable unknown
-    // Stable unknown: catalyst cell or cell determined by catalyst, still in
-    //   stable configuration. Does NOT spread uncertainty to neighbors.
-    // Unstable unknown: value depends on catalyst AND dynamic evolution.
-    //   DOES spread uncertainty — neighbors can't assume it matches stable.
-    for (int t = 0; t + 1 < grid.total_gens; t++) {
-        for (int gy = 0; gy < grid.height; gy++) {
-            for (int gx = 0; gx < grid.width; gx++) {
-
-                // Stator cells are forced alive at all times.
-                // Check that evolution doesn't definitively kill them.
-                if (stator_grid_pos.count({gx, gy})) {
-                    int alive_n = 0, unknown_n = 0;
-                    for (int dy = -1; dy <= 1; dy++)
-                        for (int dx = -1; dx <= 1; dx++) {
-                            if (dx == 0 && dy == 0) continue;
-                            int ny = grid.wrap_y(gy + dy);
-                            int nx = grid.wrap_x(gx + dx);
-                            int s = known[t][ny][nx];
-                            if (s == 1) alive_n++;
-                            else if (s < 0) unknown_n++;
-                        }
-                    // alive cell survives iff 2 or 3 neighbors
-                    // TODO: could infer unknown neighbor values here, e.g.
-                    // alive_n==3 → all unknown neighbors must be dead
-                    // TODO(test): test_stator only covers the underpopulation case
-                    // (hi < 2). Add a case for overpopulation (alive_n > 3, e.g. a
-                    // stator surrounded by 4+ known-alive neighbors).
-                    int hi = alive_n + unknown_n;
-                    if (hi < 2 || alive_n > 3) {
-                        int wx = gx + grid.ox, wy = gy + grid.oy;
-                        throw std::runtime_error(
-                            "Stator cell at (" + std::to_string(wx) + "," +
-                            std::to_string(wy) + ") is forced dead at t=" +
-                            std::to_string(t+1) + " (neighbors: " +
-                            std::to_string(alive_n) + " alive, " +
-                            std::to_string(unknown_n) + " unknown)");
-                    }
-                    known[t+1][gy][gx] = 1;
-                    continue;
-                }
-
-                // Stability optimization: if cell + all neighbors are either
-                // known or stable-unknown, the still-life is unperturbed.
-                // Unstable unknowns (-2) break this.
-                auto is_stable_or_known = [&](int ngx, int ngy) -> bool {
-                    int wgx = grid.wrap_x(ngx);
-                    int wgy = grid.wrap_y(ngy);
-                    int v = known[t][wgy][wgx];
-                    if (v == -2) return false; // unstable unknown breaks stability
-                    if (v == -1) return true;  // stable unknown = unperturbed
-                    // Known value: check if it matches the stable state
-                    int nwx = wgx + grid.ox, nwy = wgy + grid.oy;
-                    auto it = stable.find({nwx, nwy});
-                    if (it != stable.end()) {
-                        if (it->second == -1) return true;
-                        return v == it->second;
-                    }
-                    return v == 0; // outside stable map = dead
-                };
-                bool all_stable = is_stable_or_known(gx, gy);
-                if (all_stable) {
-                    for (int dy = -1; dy <= 1 && all_stable; dy++)
-                        for (int dx = -1; dx <= 1 && all_stable; dx++) {
-                            if (dx == 0 && dy == 0) continue;
-                            if (!is_stable_or_known(gx+dx, gy+dy))
-                                all_stable = false;
-                        }
-                }
-                if (all_stable) {
-                    known[t+1][gy][gx] = known[t][gy][gx];
-                    continue;
-                }
-
-                // Count neighbors: both stable and unstable unknowns count
-                int center = known[t][gy][gx];
-                int alive_n = 0, unknown_n = 0;
-                for (int dy = -1; dy <= 1; dy++)
-                    for (int dx = -1; dx <= 1; dx++) {
-                        if (dx == 0 && dy == 0) continue;
-                        int ny = grid.wrap_y(gy + dy);
-                        int nx = grid.wrap_x(gx + dx);
-                        int s = known[t][ny][nx];
-                        if (s == 1) alive_n++;
-                        else if (s < 0) unknown_n++; // -1 or -2
-                    }
-
-                // Fully determined (no unknowns)
-                if (center >= 0 && unknown_n == 0) {
-                    if (center == 1)
-                        known[t+1][gy][gx] = (alive_n == 2 || alive_n == 3) ? 1 : 0;
-                    else
-                        known[t+1][gy][gx] = (alive_n == 3) ? 1 : 0;
-                    continue;
-                }
-
-                // Range-based determination
-                int lo = alive_n, hi = alive_n + unknown_n;
-                if (center == 1) {
-                    if (lo >= 2 && hi <= 3) { known[t+1][gy][gx] = 1; continue; }
-                    if (hi < 2 || lo > 3)   { known[t+1][gy][gx] = 0; continue; }
-                } else if (center == 0) {
-                    if (lo == 3 && hi == 3) { known[t+1][gy][gx] = 1; continue; }
-                    if (lo > 3 || hi < 3)   { known[t+1][gy][gx] = 0; continue; }
-                } else {
-                    // Unknown center (stable or unstable)
-                    bool alive_survive = (lo >= 2 && hi <= 3);
-                    bool alive_die     = (hi < 2 || lo > 3);
-                    bool dead_born     = (lo == 3 && hi == 3);
-                    bool dead_stay     = (lo > 3 || hi < 3);
-
-                    if (alive_survive && dead_born) { known[t+1][gy][gx] = 1; continue; }
-                    if (alive_die && dead_stay)     { known[t+1][gy][gx] = 0; continue; }
-                    if ((alive_survive && dead_stay) || (alive_die && dead_born)) {
-                        // Result = f(center), still unknown. Preserve stability class.
-                        known[t+1][gy][gx] = center; // -1 or -2
-                        continue;
-                    }
-                }
-
-                // Ambiguous: unstable unknown (spreads uncertainty)
-                known[t+1][gy][gx] = -2;
-            }
-        }
-    }
-
-    // ── Phase 3: Allocate SAT variables only for unknown cells ──
-    int precomputed = 0;
-    for (int t = 1; t < grid.total_gens; t++) {
-        grid.cells[t].resize(grid.height, std::vector<int>(grid.width, 0));
-
-        for (int gy = 0; gy < grid.height; gy++) {
-            for (int gx = 0; gx < grid.width; gx++) {
-                int k = known[t][gy][gx];
-                if (k >= 0) {
-                    // Known constant (0 or 1)
-                    grid.cells[t][gy][gx] = k;
-                    precomputed++;
-                } else if (k == -1) {
-                    // Stable unknown: reuse the catalyst variable
-                    int cvar = grid.catalyst_vars[gy][gx];
-                    grid.cells[t][gy][gx] = cvar; // same SAT var as t=0
-                    precomputed++;
-                } else {
-                    // Unstable unknown (-2): needs fresh SAT variable
-                    grid.cells[t][gy][gx] = grid.alloc_var();
-                }
-            }
-        }
-    }
-
-    std::cout << "Precomputed cells: " << precomputed
-              << " (saved " << precomputed << " SAT variables)\n";
-
-    // Compute free evolution: simulate active pattern without catalyst
+    // ── Phase 2: Compute free evolution (active pattern, catalyst absent) ──
+    // Used both to find the first-contact time K and to fill in cell values
+    // outside the post-K uncertainty light cone.
     grid.free_evolution.resize(grid.total_gens,
         std::vector<std::vector<bool>>(grid.height,
             std::vector<bool>(grid.width, false)));
-
-    // t=0: active cells alive, everything else (including catalyst positions) dead
     for (int y = 0; y < pattern.height; y++) {
         for (int x = 0; x < pattern.width; x++) {
             if (pattern.grid[y][x] == CellState::ACTIVE) {
-                int gx = x - grid.ox;
-                int gy = y - grid.oy;
-                grid.free_evolution[0][gy][gx] = true;
+                grid.free_evolution[0][y - grid.oy][x - grid.ox] = true;
             }
         }
     }
-
-    // Evolve forward using CGOL rules (toroidal)
     for (int t = 1; t < grid.total_gens; t++) {
         for (int gy = 0; gy < grid.height; gy++) {
             for (int gx = 0; gx < grid.width; gx++) {
-                int neighbors = 0;
-                for (int dy = -1; dy <= 1; dy++) {
-                    for (int dx = -1; dx <= 1; dx++) {
-                        if (dx == 0 && dy == 0) continue;
-                        int ny = grid.wrap_y(gy + dy);
-                        int nx = grid.wrap_x(gx + dx);
-                        if (grid.free_evolution[t-1][ny][nx]) neighbors++;
-                    }
-                }
-                bool alive = grid.free_evolution[t-1][gy][gx];
-                if (alive && (neighbors == 2 || neighbors == 3))
-                    grid.free_evolution[t][gy][gx] = true;
-                else if (!alive && neighbors == 3)
-                    grid.free_evolution[t][gy][gx] = true;
+                auto at = [&](int dy, int dx) {
+                    return grid.free_evolution[t-1][grid.wrap_y(gy+dy)][grid.wrap_x(gx+dx)];
+                };
+                int nine = pack_neighborhood(
+                    at(-1,-1), at(-1,0), at(-1,1),
+                    at( 0,-1), at( 0,0), at( 0,1),
+                    at( 1,-1), at( 1,0), at( 1,1));
+                grid.free_evolution[t][gy][gx] = config.rule.evolves_to(nine);
             }
         }
     }
 
-    // Verify: precomputed cells must agree with free evolution
-    {
-        int mismatches = 0;
-        for (int t = 1; t < grid.total_gens; t++)
-            for (int gy = 0; gy < grid.height; gy++)
-                for (int gx = 0; gx < grid.width; gx++) {
-                    int cell = grid.cells[t][gy][gx];
-                    if (cell < 2) {
-                        int free_int = grid.free_evolution[t][gy][gx] ? 1 : 0;
-                        if (cell != free_int) mismatches++;
-                    }
-                }
-        if (mismatches > 0)
-            std::cout << "WARNING: " << mismatches << " precomp/free mismatches!\n";
+    // ── Phase 3: Find K = first time the active pattern reaches the catalyst ──
+    // Pre-K: the catalyst sits in its stable still-life and cells outside the
+    // catalyst neighborhood evolve identically to free_evolution. No SAT vars
+    // are needed at t in [1, K).
+    // Post-K: uncertainty spreads outward at lightspeed from catalyst_neighborhood
+    // (Chebyshev radius +1 per generation). Cells inside that cone get fresh SAT
+    // vars; cells outside still follow free_evolution.
+    int K = grid.total_gens;
+    for (int t = 0; t < grid.total_gens; t++) {
+        bool contact = false;
+        for (auto [wx, wy] : grid.catalyst_neighborhood) {
+            if (grid.free_at(wx, wy, t)) { contact = true; break; }
+        }
+        if (contact) { K = t; break; }
     }
+    int detected_K = K;
+    // TODO: With the "pre-K reuses catalyst_vars" optimization, certain
+    // inputs (notably with stator cells) become UNSAT — the encoding's
+    // tautology-discard interaction with same-variable input/output bits
+    // appears to lose constraints in a way I haven't fully diagnosed.
+    // For now, force K=0 so every t > 0 in the catalyst light cone gets
+    // fresh SAT vars. This loses the "deterministic until first contact"
+    // saving but keeps correctness. Revisit when there's time to debug.
+    K = 0;
+    if (detected_K < grid.total_gens)
+        std::cout << "First contact at t=" << detected_K
+                  << " (using K=0 for now; see TODO)\n";
+    else
+        std::cout << "First contact: never (within " << grid.total_gens << " gens)\n";
+
+    // ── Phase 4: Allocate cells per timestep ──
+    // Maintain a growing "uncertain" mask seeded at t=K with catalyst_neighborhood
+    // and dilated by 1 Chebyshev step per generation.
+    std::set<std::pair<int,int>> stator_grid_pos;
+    for (auto [wx, wy] : grid.stator_positions)
+        stator_grid_pos.insert({wx - grid.ox, wy - grid.oy});
+
+    std::vector<std::vector<bool>> uncertain(grid.height, std::vector<bool>(grid.width, false));
+    auto seed_uncertain = [&]() {
+        for (auto [wx, wy] : grid.catalyst_neighborhood) {
+            int gx = wx - grid.ox, gy = wy - grid.oy;
+            if (gx >= 0 && gx < grid.width && gy >= 0 && gy < grid.height)
+                uncertain[gy][gx] = true;
+        }
+    };
+    auto dilate_uncertain = [&]() {
+        auto prev = uncertain;
+        for (int gy = 0; gy < grid.height; gy++) {
+            for (int gx = 0; gx < grid.width; gx++) {
+                if (uncertain[gy][gx]) continue;
+                for (int dy = -1; dy <= 1 && !uncertain[gy][gx]; dy++)
+                    for (int dx = -1; dx <= 1 && !uncertain[gy][gx]; dx++)
+                        if (prev[grid.wrap_y(gy+dy)][grid.wrap_x(gx+dx)])
+                            uncertain[gy][gx] = true;
+            }
+        }
+    };
+
+    if (K == 0) seed_uncertain();
+
+    int sat_vars_allocated = 0;
+    for (int t = 1; t < grid.total_gens; t++) {
+        grid.cells[t].resize(grid.height, std::vector<int>(grid.width, 0));
+        if (t == K) seed_uncertain();
+        else if (t > K) dilate_uncertain();
+
+        for (int gy = 0; gy < grid.height; gy++) {
+            for (int gx = 0; gx < grid.width; gx++) {
+                int wx = gx + grid.ox, wy = gy + grid.oy;
+
+                // Stator: forced alive at every t.
+                if (stator_grid_pos.count({gx, gy})) {
+                    grid.cells[t][gy][gx] = 1;
+                    continue;
+                }
+
+                if (t < K) {
+                    // Pre-perturbation. Catalyst cells reuse their t=0 var
+                    // (catalyst_vars holds: 0 for dead-frame, SAT var for
+                    // unknown, 1 for non_stator). Other cells follow free
+                    // evolution (catalyst presence doesn't affect them yet).
+                    if (grid.catalyst_neighborhood.count({wx, wy}))
+                        grid.cells[t][gy][gx] = grid.catalyst_vars[gy][gx];
+                    else
+                        grid.cells[t][gy][gx] = grid.free_evolution[t][gy][gx] ? 1 : 0;
+                } else if (uncertain[gy][gx]) {
+                    grid.cells[t][gy][gx] = grid.alloc_var();
+                    sat_vars_allocated++;
+                } else {
+                    grid.cells[t][gy][gx] = grid.free_evolution[t][gy][gx] ? 1 : 0;
+                }
+            }
+        }
+    }
+
+    std::cout << "Allocated " << sat_vars_allocated
+              << " per-timestep SAT variables (in post-contact light cone)\n";
 
     return grid;
 }
