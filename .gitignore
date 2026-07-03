@@ -2,6 +2,7 @@
 catalyst-search
 *.o
 *.dSYM/
+.DS_Store
 
 # Generated output
 *_results.rle

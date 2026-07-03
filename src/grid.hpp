@@ -216,6 +216,12 @@ struct Grid {
     // Dimensions at each timestep (light cone expands)
     int total_gens = 0;
 
+    // First-contact generation: for t in [1, K) the catalyst is undisturbed and
+    // cells are deterministic (catalyst cells pinned to stable, others = free
+    // evolution). Transitions producing a pre-K cell (t+1 < K) need no evolution
+    // clause. K=0 means "treat everything from t=1 as post-contact".
+    int K = 0;
+
     // Global coordinate offset: grid position (0,0) corresponds to world (ox, oy)
     int ox = 0, oy = 0;
 
@@ -460,33 +466,36 @@ inline Grid build_grid(const SearchConfig& config) {
         }
     }
 
-    // ── Phase 3: Find K = first time the active pattern reaches the catalyst ──
-    // Pre-K: the catalyst sits in its stable still-life and cells outside the
-    // catalyst neighborhood evolve identically to free_evolution. No SAT vars
-    // are needed at t in [1, K).
-    // Post-K: uncertainty spreads outward at lightspeed from catalyst_neighborhood
-    // (Chebyshev radius +1 per generation). Cells inside that cone get fresh SAT
-    // vars; cells outside still follow free_evolution.
+    // ── Phase 3: Find K = first generation the active pattern can disturb the
+    // catalyst. Pre-K the catalyst sits in its stable still-life and cells
+    // outside the catalyst neighborhood evolve identically to free_evolution.
+    //
+    // Subtlety: the catalyst's *own* alive cells extend its reach. A live cell
+    // two steps away from the catalyst, together with the catalyst's cells, can
+    // birth a neighborhood cell one generation before the active pattern would
+    // reach the catalyst on its own. So we must detect contact against the
+    // catalyst neighborhood DILATED by one (Chebyshev distance ≤ 2 from a
+    // catalyst cell), not just the neighborhood itself — otherwise pre-K
+    // pinning forbids that legitimate early interaction and the search can go
+    // spuriously UNSAT (notably with stators, whose forced-alive cell makes the
+    // dense catalysts that rely on this).
+    std::set<std::pair<int,int>> contact_zone;  // catalyst_neighborhood dilated by 1
+    for (auto [wx, wy] : grid.catalyst_neighborhood)
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+                contact_zone.insert({wx + dx, wy + dy});
+
     int K = grid.total_gens;
     for (int t = 0; t < grid.total_gens; t++) {
         bool contact = false;
-        for (auto [wx, wy] : grid.catalyst_neighborhood) {
+        for (auto [wx, wy] : contact_zone) {
             if (grid.free_at(wx, wy, t)) { contact = true; break; }
         }
         if (contact) { K = t; break; }
     }
-    int detected_K = K;
-    // TODO: With the "pre-K reuses catalyst_vars" optimization, certain
-    // inputs (notably with stator cells) become UNSAT — the encoding's
-    // tautology-discard interaction with same-variable input/output bits
-    // appears to lose constraints in a way I haven't fully diagnosed.
-    // For now, force K=0 so every t > 0 in the catalyst light cone gets
-    // fresh SAT vars. This loses the "deterministic until first contact"
-    // saving but keeps correctness. Revisit when there's time to debug.
-    K = 0;
-    if (detected_K < grid.total_gens)
-        std::cout << "First contact at t=" << detected_K
-                  << " (using K=0 for now; see TODO)\n";
+    grid.K = K;
+    if (K < grid.total_gens)
+        std::cout << "First contact at t=" << K << "\n";
     else
         std::cout << "First contact: never (within " << grid.total_gens << " gens)\n";
 

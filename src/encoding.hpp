@@ -91,6 +91,9 @@ inline int encode_evolution(CadicalSolver& solver, Grid& grid,
                             const RuleEncoding& enc) {
     int count = 0;
     for (int t = 0; t + 1 < grid.total_gens; t++) {
+        // Pre-K transitions produce fully-determined (pinned) cells; their
+        // evolution is redundant with the stability constraint. Skip them.
+        if (t + 1 < grid.K) continue;
         for (int gy = 0; gy < grid.height; gy++) {
             for (int gx = 0; gx < grid.width; gx++) {
                 // Output cell must be a variable (not boundary dead)
